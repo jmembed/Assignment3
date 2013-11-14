@@ -1,0 +1,268 @@
+	   title     "Stopwatch Generator"
+	   list      p=16f877a
+	   include   "p16f877a.inc"
+
+	__CONFIG _CP_OFF & _WDT_OFF & _BODEN_OFF & _PWRTE_ON & _HS_OSC & _WRT_OFF & _LVP_OFF & _CPD_OFF
+
+; '__CONFIG' directive is used to embed configuration data within .asm file.
+; The lables following the directive are located in the respective .inc file.
+; See respective data sheet for additional information on configuration word.
+; Remember there are TWO underscore characters before the word CONFIG.
+
+;*******************************************************************
+;
+;  filename  ::   A fundamental stop watch with some additional features
+;  ===================================
+;
+; Description
+;    The stop watch will exhibit a start and stop button for the user to begin and end count
+;	 A reset facility is also included with the current contents of count
+;	 stored and displayed on reset
+;	 A maximum count will reset the counter and begin counting again
+;	 An alarm will sound when an alarm time is reached 
+; 	 
+;
+;
+; Method
+;    When start button is pressed count will be initiated
+;	 Check for maximum and alarm will be incorporated into count
+;	 reset routine set up as an interrupt using RB0 as reset switch
+;	 On stop, output displayed as hex value of the current counts 
+;	 ascii character values
+;
+; Version
+;    Michael Black and James McLay   V1.0    November 2013
+;
+; Project Log
+;    14/11/13:		Code Began
+;	 14/11/13:		Basic code structure set up
+;
+;******************************************************************* 
+;*******************************************************************    
+;
+; Constant declarations
+; =====================
+;
+MaxCount  equ     d'99'           ; Maximum Iterations of Count before reset
+CountStep equ 	  d'620'		  ; 1 count value (in ms) - may not be needed in code 
+;
+;******************************************************************* 
+;*******************************************************************    
+;
+; Variable declarations  : User RAM area starts at location h'20' for PIC16F877a
+; =====================
+;
+w_temp		equ	h'7D'		; variable used for context saving 
+status_temp	equ	h'7E'		; variable used for context saving
+pclath_temp	equ	h'7F'		; variable used for context saving
+
+Count	        equ     h'20'
+
+;
+;*******************************************************************
+;******************************************************************* 
+; Initial system vector.
+;   
+	org     h'00'                   ; initialise system restart vector
+	clrf 	STATUS
+	clrf 	PCLATH			; needed for TinyBootloader functionality
+	goto    start
+
+;******************************************************************* 
+;******************************************************************* 
+; interrupt vector
+;
+	org	h'04'
+	goto	int_routine
+
+;******************************************************************* 
+;******************************************************************* 
+;
+; System subroutines.
+;  
+	org     h'05'           ; start of program space
+;
+;******************************************************************* 
+;******************************************************************* 
+; System functions
+;******************************************************************* 
+;
+;* Init : initialise I/O ports and variables
+;  ====
+; Notes
+;      RB0 reset switch input 
+;	   RA0 used as stop/start button
+;
+Init    
+	bsf     STATUS, RP0        ; enable page 1 register set
+	bcf		STATUS, RP1
+
+	movlw	h'07'
+	movwf	ADCON1		   ; set PORTA to be digital rather than analogue
+
+	movlw   b'000011'
+	movwf   TRISA              ; set port A  
+	movlw   b'00000001'                 
+	movwf   TRISB              ; set port B 
+	movlw   b'11111111'                 
+	movwf   TRISC              ; set port C 
+	movlw   b'00000001'                 
+	movwf   TRISD              ; set port D 
+	bcf     STATUS, RP0        ; back to page 0 register set
+;
+; initialise program variables
+;
+;	clrf	variable1          ; ensure that no delay command is active
+
+;
+; configure RB0/INT interrupt.
+;       1. Configure interrupt to occur on rising edge.
+;       2. Set RB0/INT enable flag (INTE in INTCON)
+;       3. enable global interrupts
+;
+	bsf     STATUS, RP0        ; enable page 1 register set 
+    bsf     OPTION_REG,INTEDG  ; RB0 interrupt on rising edge for reset switch 
+	bcf     STATUS, RP0        ; back to page 0 register set       
+;
+	bsf     INTCON,INTE        ; enable RB0/INT interrupt
+;
+ 
+	bcf 	PORTA, RA0		   ; ensure start stop trigger port is cleared
+
+	return
+;******************************************************************* 
+;
+;  int_routine : routine to handle the single interrupt
+;  ===========
+; Notes
+;      Interrupt Routine carried out on Reset Push Button
+;			- stores current value and displays 
+;			- resets count
+;			- restarts code to wait for start button
+;
+int_routine
+	movwf   w_temp            ; save off current W register contents
+	movf	STATUS,w          ; move status register into W register
+	movwf	status_temp       ; save off contents of STATUS register
+	movf	PCLATH,w	  	  ; move pclath register into w register
+	movwf	pclath_temp	  	  ; save off contents of PCLATH register
+;
+;	MY INTERRUPT ROUTINE
+; 	LapTime = Count;	
+;	Count = 0;
+;	Goto start
+;
+	movf	pclath_temp,w	  ; retrieve copy of PCLATH register
+	movwf	PCLATH		  ; restore pre-isr PCLATH register contents
+	movf    status_temp,w     ; retrieve copy of STATUS register
+	movwf	STATUS            ; restore pre-isr STATUS register contents
+	swapf   w_temp,f
+	swapf   w_temp,w          ; restore pre-isr W register contents
+	retfie 
+;*******************************************************************    
+;
+; ****** other system subroutines.
+;
+
+counter
+
+; check for max 
+; 	if count == max
+;		goto reset
+; 	end
+;
+
+	movf 	MaxCount, w	;
+	subwf 	Count	;
+	btfsc	status, c	; if c bit is 0 then skip
+	goto 	MaxNotReached
+	call	reset
+
+MaxOrAlarm	equ 	b'1'; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+						; MaxOrAlarm = 1 - triggered by alarm or max count
+						; MaxOrAlarm = 0 - count completed as usual
+
+	return				; force return to start after max is reached
+						
+	
+MaxNotReached 
+	
+; check for alarm
+; 		if count == alarm
+;		generate alarm
+;		end
+;
+	movf 	Alarm, w	;
+	subwf 	Count	;
+	btfsc	status, c	; if c bit is 0 then skip
+	goto 	BeginCount
+	call	Alarm
+
+MaxOrAlarm	equ 	b'1'; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+						; MaxOrAlarm = 1 - triggered by alarm or max count
+						; MaxOrAlarm = 0 - count completed as usual
+
+	return				; force return to start after alarm
+						 
+
+BeginCount
+
+; generate remaining time to complete one count 
+
+MaxOrAlarm 	equ		b'0'; 
+
+	return 				
+;******************************************************************* 
+;*******************************************************************   
+;
+; MAIN program
+; ============
+;
+start   
+    call    Init
+
+start1 
+ 
+;	if start(RA0)==0
+;		goto loop
+;	else
+;		while (STOP(also RA0)==0)
+;			call counter
+;		end 
+;	end
+;	
+;	display current count value
+
+loop
+	movf	RA0, w			; start trigger value to w reg
+	btfss	status, z		; if z bit is 1 then skip 
+	goto 	loop			; check again
+
+;MAY BE A PROBLEM IF RA0 PUSH SWITCH IS NOT PRESSED DURING CHECK, 
+;BETTER AS INTERRUPT BUT CAN WE HAVE 2 INTERRUPTS
+
+countloop
+	movf	RA0, w			; stop trigger to w reg 
+	btfsc	status, z		; if z bit is 0 then skip
+	goto	exit 			
+	call 	counter
+
+	movf	MaxOrAlarm, w	; MaxOrAlarm to w reg 
+	btfsc	status, z		; if z bit is 0 then skip
+	goto	start
+	goto 	countloop
+	
+exit 
+
+;display current count value 
+	
+	
+
+;
+;******************************************************************* 
+;
+; Program complete.
+;
+	END
+
+
