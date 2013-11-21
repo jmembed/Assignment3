@@ -37,6 +37,8 @@
 ;    14/11/13:		Code Began
 ;	 14/11/13:		Basic code structure set up
 ;	 15/11/13:		Functionality changed so stop press is ISR trigger
+;	 21/11/13:		Serial Data Output Added
+;					- Added HexUnits and HexSixteens Count to aid
 ;
 ;******************************************************************* 
 ;*******************************************************************    
@@ -48,6 +50,8 @@ MaxCount  	equ     	d'99'           ; Maximum Iterations of Count before reset
 CountStep 	equ 		d'620'		    ; 1 count value (in ms) - may not be needed in code 
 Base	  	equ			d'10' 			; BAse count value
 Alarm		equ 		d'10'			; constant for now without switches 
+AsciiInteger	equ			d'48'			; where ascii characters representing integer values starts
+AsciiNum	equ			d'65'			; where ascii characters representing numbers start
 ;
 ;******************************************************************* 
 ;*******************************************************************    
@@ -60,9 +64,12 @@ status_temp	equ	h'7E'		; variable used for context saving
 pclath_temp	equ	h'7F'		; variable used for context saving
 
 Count	        equ     h'20'		; Decimal internal count to aid max/alarm check
-Stop			equ 	h'21'		; Coutn value when stop is pressed
-Units			equ 	h'22'		; Unit value for display count
-Tens			equ		h'23' 		; Tens Value for display count
+HexUnits		equ		h'21'		; Hex value to aid hex count output
+HexSixteens		equ		h'22'		; Hex value of count to aid output
+Units			equ 	h'23'		; Unit value for display count
+Tens			equ		h'24' 		; Tens Value for display count
+counter			equ		h'25'		; counter used for serial data output
+temp			equ		h'26'		; temp variable value
 
 ;
 ;*******************************************************************
@@ -96,8 +103,11 @@ Tens			equ		h'23' 		; Tens Value for display count
 ;* Init : initialise I/O ports and variables
 ;  ====
 ; Notes
-;      RB0 reset switch input 
-;	   RA0 used as stop/start button
+;      RB0  reset switch input 
+;	   RB1, RB2 used as reset and start respectively 
+;	   RC0 used as output from microcontroller to enable 7 seg dispaly
+; 	   RC1 used as output from microcontroller for clock
+;	   RC2 used as output from microcontroller for 16 bit serial data to 7 seg display
 ;
 Init    
 	bsf     STATUS, RP0        ; enable page 1 register set
@@ -108,10 +118,10 @@ Init
 
 	movlw   b'000011'
 	movwf   TRISA              ; set port A  
-	movlw   b'00000001'                 
-	movwf   TRISB              ; set port B 
-	movlw   b'00000011'                 
-	movwf   TRISC              ; set port C 
+	movlw   b'00000111'                 
+	movwf   TRISB              ; set port B, RB0,1,2 used as inputs
+	movlw   b'00000000'                 
+	movwf   TRISC              ; set port C, all outputs
 	movlw   b'11111111'                 
 	movwf   TRISD              ; set port D 
 	bcf     STATUS, RP0        ; back to page 0 register set
@@ -119,7 +129,8 @@ Init
 ; initialise program variables
 ;
 ;	clrf	variable1          ; ensure that no delay command is active
-
+;
+;***********************************************************************
 ;
 ; configure RB0/INT interrupt.
 ;       1. Configure interrupt to occur on rising edge.
@@ -130,9 +141,12 @@ Init
     bsf     OPTION_REG,INTEDG  ; RB0 interrupt on rising edge for reset switch 
 	bcf     STATUS, RP0        ; back to page 0 register set       
 
-;
- 
-	bcf 	PORTC, 0		   ; ensure start stop trigger port is cleared
+   ; ensure start stop trigger port is cleared
+	bcf 	PORTB, 0		
+	bcf		PORTB, 1
+
+	;ensure enable bit is high, i.e. disabled		   
+	bsf		PORTC, 0
 
 	return
 ;******************************************************************* 
@@ -151,28 +165,133 @@ int_routine
 	movf	PCLATH,w	  	  ; move pclath register into w register
 	movwf	pclath_temp	  	  ; save off contents of PCLATH register
 ;
+;******************************************************************* 	
 ;	MY INTERRUPT ROUTINE
-; 	LapTime = Count;
-	movf	Count, w		  ; 
-	movwf 	Stop			  ; 
+;******************************************************************* 	
+;
+; set 8 bit data values representing ascii characters
+; as hex count could be represented by a letter or an integer in ascii
+; this must be accounted for
+;
+;******************************************************************* 	
+;Data1 Set
+;******************************************************************* 
+; if HexUnits < 10; 			we have integer
+;	Data1 = HexUnits + 48;  	Ascii Integer start point plus units
+; else
+;	Data1 = HexUnits + 65; 		Ascii Num Start Point plus units
+
+
+	movf	d'10', w
+	subwf	HexUnits
+	goto 	ifelse
+	movf 	HexUnits, w
+	addwf	AsciiInteger,w		;store result in w reg+
+	movwf	Data1	
+
+ifelse  
+	movf 	HexTens, w
+	addwf	AsciiNum,w		;store result in w reg+
+	movwf	Data1
+
+;******************************************************************* 	
+;Data2 Set
+;******************************************************************* 
+;
+; if HexSixteens< 10; 			we have integer
+;	Data2 = HexUnits + 48;  	Ascii Integer start point plus units
+; else							we have letter A-F
+;	Data2 = HexUnits + 65; 		Ascii Num Start Point plus units
+
+	movf	d'10', w
+	subwf	HexSixteens
+	goto 	ifelse2
+	movf 	HexSixteens, w
+	addwf	AsciiInteger,w		;store result in w reg+
+	movwf	Data2
 	
-;DISPLAY STOP ON HEX
+ifelse2 
+	movf 	HexSixteens, w
+	addwf	AsciiNum,w		;store result in w reg+
+	movwf	Data2
+
+;******************************************************************* 	
+;DISPLAY STOP COUNT ON HEX
+;******************************************************************* 
+; enable bit low to enable sendign data
+; Data1 = 8 bit value representing first hex ciunt ascii value
+; Data2 = 8 bit value representing second hex count ascii value
+; for (n = 0; n=7; n++) {
+;	clk = 1
+;	may need wait!!
+;	clk = 0
+;	shift data1 right
+; 	}
+;
+; repeat for data 2
 
 
-;	Goto start, Max Or Alarm used in same way as counter to return to start of program
+	bcf		PORTC, 0; 				; Enable = 0; 
+	
+	clrf	counter; 
 
-Restart	equ 	b'1'	; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
-							; MaxOrAlarm = 1 - triggered by alarm or max count
-							; MaxOrAlarm = 0 - count completed as usual
+serialoutput
+	movlw	d'7'	
+	subwf	counter,d	 
+	btfsc	STATUS,Z
+	goto 	forexit
+
+;pulse clock to send one bit serially
+
+	bsf		PORTC, 1
+;	may need wait
+	bcf		PORTC, 1
+
+;shift right 8 bit number so next clock high sends next bit
+	rrf		data2, d 				; update data1
+
+	incf	counter
+	goto	serialoutput
+
+forexit
+
+	clrf	counter
+
+serialoutput2
+	movlw	d'7'	
+	subwf	counter,d	 
+	btfsc	STATUS,Z
+	goto 	forexit2
+
+;pulse clock to send one bit serially
+
+	bsf		PORTC, 1
+;	may need wait
+	bcf		PORTC, 1
+
+;shift right 8 bit number so next clock high sends next bit
+	rrf		data1, d 		; update data1
+
+	incf	counter
+	goto	serialoutput2
+
+forexit2
+
+;	ensure return to start after interrupt
+
+Restart	equ 	b'1'						; restart binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+											; restart = 1 - triggered by alarm or max count
+											; Restart = 0 - count completed as usual
 
 ;
-	movf	pclath_temp,w	  ; retrieve copy of PCLATH register
-	movwf	PCLATH		  	; restore pre-isr PCLATH register contents
-	movf    status_temp,w     ; retrieve copy of STATUS register
-	movwf	STATUS            ; restore pre-isr STATUS register contents
+	movf	pclath_temp,w	  				; retrieve copy of PCLATH register
+	movwf	PCLATH		  					; restore pre-isr PCLATH register contents
+	movf    status_temp,w     				; retrieve copy of STATUS register
+	movwf	STATUS            				; restore pre-isr STATUS register contents
 	swapf   w_temp,f
-	swapf   w_temp,w          ; restore pre-isr W register contents
+	swapf   w_temp,w          				; restore pre-isr W register contents
 	retfie 
+
 ;*******************************************************************    
 ;
 ; ****** other system subroutines.
@@ -192,11 +311,11 @@ checkForMax
 	goto 	MaxNotReached
 	call	ResetCount
 
-Restart		equ 	b'1'				; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
-										; MaxOrAlarm = 1 - triggered by alarm or max count
-										; MaxOrAlarm = 0 - count completed as usual
+Restart		equ 	b'1'					; Resatrt binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+											; Restart = 1 - triggered by alarm or max count
+											; restart = 0 - count completed as usual
 
-	return								; force return to start after max is reached
+	return									; force return to start after max is reached
 
 ;*******************************************************************    
 ;						
@@ -210,16 +329,16 @@ MaxNotReached
 
 	movf 	Alarm, w				
 	subwf 	Count					
-	btfsc	STATUS, Z				; if c bit is 0 then skip
+	btfsc	STATUS, Z						; if c bit is 0 then skip
 	goto 	BeginCount
 	call	Alarm
 
 
-Restart 	equ 	b'1'			; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
-									; MaxOrAlarm = 1 - triggered by alarm or max count
-									; MaxOrAlarm = 0 - count completed as usual
+Restart 	equ 	b'1'					; Restart binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+											; Restart = 1 - triggered by alarm or max count
+											; Restart = 0 - count completed as usual
 
-	return							; force return to start after alarm
+	return									; force return to start after alarm
 
 ;*******************************************************************    
 ;							 
@@ -229,6 +348,7 @@ BeginCount
 
 call delay
 
+; Base ten counting 
 ; units = units + 1; 
 ;if units=Base 
 ;	units = 0;
@@ -249,12 +369,32 @@ call delay
 ifelse 
 	incf	Units, f		; 
 
-;MaxOrAlarm 	equ		b'0'; 
+;Hex count to aid stop output
+; same functionality as above but units resets when 15
+
+	incf	HexUnits, f		;
+	
+	movf 	HexUnits, f		; 
+	sublw	d'16' 			;
+	btfss	STATUS, Z		; 
+	goto 	ifelse 			; 
+	incf	HexSixteens, f			; 
+	movlw	d'0'
+	movwf	HexUnits	
+
+ifelse 
+	incf	HexUnits, f		; 
+
+;Restart 	equ		b'0'; 
 
 	return 	
 ;			
 ;******************************************************************* 
 ResetCount
+; set overall count, units and tens to 0
+	clrf	Count
+	clrf	Units
+	clrf	Tens
 
 return
 ;*******************************************************************   
@@ -284,7 +424,7 @@ start1
 	bcf     INTCON,INTE        ; disable RB0/INT interrupt while start/ reset bit checks
 
 loop
-	btfsc	PORTC, 0 			; check reset trigger	
+	btfsc	PORTB, 1 			; check reset trigger	
 	goto	RESETCOUNT			
 	goto 	STARTCHECK
 
@@ -293,20 +433,19 @@ RESETCOUNT
 	goto	loop
 
 STARTCHECK
-	btfss	PORTC, 1
-	goto 	loop			; check again
+	btfss	PORTB, 2
+	goto 	loop				; check again
 
 
 	bsf     INTCON,INTE        ; enable RB0/INT interrupt
 
 countloop			
 	call 	counter
-	movf	Restart, w	; MaxOrAlarm to w reg 
-	btfsc	STATUS, Z		; if z bit is 0 then skip
+	movf	Restart, w			; Restart to w reg 
+	btfsc	STATUS, Z			; if z bit is 0 then skip
 	goto	start
 	goto 	countloop
 	
-
 ;
 ;******************************************************************* 
 ;
