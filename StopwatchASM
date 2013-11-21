@@ -36,6 +36,7 @@
 ; Project Log
 ;    14/11/13:		Code Began
 ;	 14/11/13:		Basic code structure set up
+;	 15/11/13:		Functionality changed so stop press is ISR trigger
 ;
 ;******************************************************************* 
 ;*******************************************************************    
@@ -43,8 +44,10 @@
 ; Constant declarations
 ; =====================
 ;
-MaxCount  equ     d'99'           ; Maximum Iterations of Count before reset
-CountStep equ 	  d'620'		  ; 1 count value (in ms) - may not be needed in code 
+MaxCount  	equ     	d'99'           ; Maximum Iterations of Count before reset
+CountStep 	equ 		d'620'		    ; 1 count value (in ms) - may not be needed in code 
+Base	  	equ			d'10' 			; BAse count value
+Alarm		equ 		d'10'			; constant for now without switches 
 ;
 ;******************************************************************* 
 ;*******************************************************************    
@@ -56,7 +59,10 @@ w_temp		equ	h'7D'		; variable used for context saving
 status_temp	equ	h'7E'		; variable used for context saving
 pclath_temp	equ	h'7F'		; variable used for context saving
 
-Count	        equ     h'20'
+Count	        equ     h'20'		; Decimal internal count to aid max/alarm check
+Stop			equ 	h'21'		; Coutn value when stop is pressed
+Units			equ 	h'22'		; Unit value for display count
+Tens			equ		h'23' 		; Tens Value for display count
 
 ;
 ;*******************************************************************
@@ -104,9 +110,9 @@ Init
 	movwf   TRISA              ; set port A  
 	movlw   b'00000001'                 
 	movwf   TRISB              ; set port B 
-	movlw   b'11111111'                 
+	movlw   b'00000011'                 
 	movwf   TRISC              ; set port C 
-	movlw   b'00000001'                 
+	movlw   b'11111111'                 
 	movwf   TRISD              ; set port D 
 	bcf     STATUS, RP0        ; back to page 0 register set
 ;
@@ -123,11 +129,10 @@ Init
 	bsf     STATUS, RP0        ; enable page 1 register set 
     bsf     OPTION_REG,INTEDG  ; RB0 interrupt on rising edge for reset switch 
 	bcf     STATUS, RP0        ; back to page 0 register set       
-;
-	bsf     INTCON,INTE        ; enable RB0/INT interrupt
+
 ;
  
-	bcf 	PORTA, RA0		   ; ensure start stop trigger port is cleared
+	bcf 	PORTC, 0		   ; ensure start stop trigger port is cleared
 
 	return
 ;******************************************************************* 
@@ -135,9 +140,8 @@ Init
 ;  int_routine : routine to handle the single interrupt
 ;  ===========
 ; Notes
-;      Interrupt Routine carried out on Reset Push Button
-;			- stores current value and displays 
-;			- resets count
+;      Interrupt Routine carried out on Stop Push Button
+;			- stores current value and displays ascii hex equivalent 
 ;			- restarts code to wait for start button
 ;
 int_routine
@@ -148,12 +152,22 @@ int_routine
 	movwf	pclath_temp	  	  ; save off contents of PCLATH register
 ;
 ;	MY INTERRUPT ROUTINE
-; 	LapTime = Count;	
-;	Count = 0;
-;	Goto start
+; 	LapTime = Count;
+	movf	Count, w		  ; 
+	movwf 	Stop			  ; 
+	
+;DISPLAY STOP ON HEX
+
+
+;	Goto start, Max Or Alarm used in same way as counter to return to start of program
+
+Restart	equ 	b'1'	; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+							; MaxOrAlarm = 1 - triggered by alarm or max count
+							; MaxOrAlarm = 0 - count completed as usual
+
 ;
 	movf	pclath_temp,w	  ; retrieve copy of PCLATH register
-	movwf	PCLATH		  ; restore pre-isr PCLATH register contents
+	movwf	PCLATH		  	; restore pre-isr PCLATH register contents
 	movf    status_temp,w     ; retrieve copy of STATUS register
 	movwf	STATUS            ; restore pre-isr STATUS register contents
 	swapf   w_temp,f
@@ -166,25 +180,26 @@ int_routine
 
 counter
 
+checkForMax
 ; check for max 
 ; 	if count == max
 ;		goto reset
 ; 	end
 ;
-
 	movf 	MaxCount, w	;
-	subwf 	Count	;
-	btfsc	status, c	; if c bit is 0 then skip
+	subwf 	Count		;
+	btfsc	STATUS, Z	; if c bit is 0 then skip
 	goto 	MaxNotReached
-	call	reset
+	call	ResetCount
 
-MaxOrAlarm	equ 	b'1'; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
-						; MaxOrAlarm = 1 - triggered by alarm or max count
-						; MaxOrAlarm = 0 - count completed as usual
+Restart		equ 	b'1'				; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+										; MaxOrAlarm = 1 - triggered by alarm or max count
+										; MaxOrAlarm = 0 - count completed as usual
 
-	return				; force return to start after max is reached
-						
-	
+	return								; force return to start after max is reached
+
+;*******************************************************************    
+;						
 MaxNotReached 
 	
 ; check for alarm
@@ -192,28 +207,61 @@ MaxNotReached
 ;		generate alarm
 ;		end
 ;
-	movf 	Alarm, w	;
-	subwf 	Count	;
-	btfsc	status, c	; if c bit is 0 then skip
+
+	movf 	Alarm, w				
+	subwf 	Count					
+	btfsc	STATUS, Z				; if c bit is 0 then skip
 	goto 	BeginCount
 	call	Alarm
 
-MaxOrAlarm	equ 	b'1'; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
-						; MaxOrAlarm = 1 - triggered by alarm or max count
-						; MaxOrAlarm = 0 - count completed as usual
 
-	return				; force return to start after alarm
-						 
+Restart 	equ 	b'1'			; MaxOrAlarm binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
+									; MaxOrAlarm = 1 - triggered by alarm or max count
+									; MaxOrAlarm = 0 - count completed as usual
 
+	return							; force return to start after alarm
+
+;*******************************************************************    
+;							 
 BeginCount
 
-; generate remaining time to complete one count 
+; generate remaining time to complete one count and increment count
 
-MaxOrAlarm 	equ		b'0'; 
+call delay
 
-	return 				
+; units = units + 1; 
+;if units=Base 
+;	units = 0;
+; 	Base = Base + 1; 
+;else
+;	units = units + 1; 
+
+	incf	Units, f		;
+	
+	movf 	Units, f		; 
+	sublw	Base			;
+	btfss	STATUS, Z		; 
+	goto 	ifelse 			; 
+	incf	Tens, f			; 
+	movlw	d'0'
+	movwf	Units	
+
+ifelse 
+	incf	Units, f		; 
+
+;MaxOrAlarm 	equ		b'0'; 
+
+	return 	
+;			
 ;******************************************************************* 
+ResetCount
+
+return
 ;*******************************************************************   
+delay
+
+return
+;*******************************************************************  
 ;
 ; MAIN program
 ; ============
@@ -226,36 +274,37 @@ start1
 ;	if start(RA0)==0
 ;		goto loop
 ;	else
-;		while (STOP(also RA0)==0)
+;		while (RESET(also RA0)==0)
 ;			call counter
 ;		end 
 ;	end
 ;	
 ;	display current count value
 
+	bcf     INTCON,INTE        ; disable RB0/INT interrupt while start/ reset bit checks
+
 loop
-	movf	RA0, w			; start trigger value to w reg
-	btfss	status, z		; if z bit is 1 then skip 
+	btfsc	PORTC, 0 			; check reset trigger	
+	goto	RESETCOUNT			
+	goto 	STARTCHECK
+
+RESETCOUNT
+	call 	ResetCount
+	goto	loop
+
+STARTCHECK
+	btfss	PORTC, 1
 	goto 	loop			; check again
 
-;MAY BE A PROBLEM IF RA0 PUSH SWITCH IS NOT PRESSED DURING CHECK, 
-;BETTER AS INTERRUPT BUT CAN WE HAVE 2 INTERRUPTS
 
-countloop
-	movf	RA0, w			; stop trigger to w reg 
-	btfsc	status, z		; if z bit is 0 then skip
-	goto	exit 			
+	bsf     INTCON,INTE        ; enable RB0/INT interrupt
+
+countloop			
 	call 	counter
-
-	movf	MaxOrAlarm, w	; MaxOrAlarm to w reg 
-	btfsc	status, z		; if z bit is 0 then skip
+	movf	Restart, w	; MaxOrAlarm to w reg 
+	btfsc	STATUS, Z		; if z bit is 0 then skip
 	goto	start
 	goto 	countloop
-	
-exit 
-
-;display current count value 
-	
 	
 
 ;
