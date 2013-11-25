@@ -22,7 +22,6 @@
 ;	 An alarm will sound when an alarm time is reached 
 ; 	 
 ;
-;
 ; Method
 ;    When start button is pressed count will be initiated
 ;	 Check for maximum and alarm will be incorporated into count
@@ -40,7 +39,9 @@
 ;	 21/11/13:		Serial Data Output Added
 ;					- Added HexUnits and HexSixteens Count to aid
 ;	 22/11/13		Delay added;
-;				Tested Hex Count Ascii Representation
+;					Tested Hex Count Ascii Representation
+; 	 25/11/13		Serial Data Output not Working 
+;					Protocol fixed 
 ;
 ;******************************************************************* 
 ;*******************************************************************    
@@ -78,6 +79,8 @@ delcnt1			equ		h'30'		; small delay
 delcnt2			equ		h'31'		; medium delay
 Restart			equ 	h'32'		; Restart variable that is 1 to force system restart
 temp2			equ		h'33'		; temp 2 variable to hold output subtracted value
+HexOut1			equ		h'34'		; 8 bit data representing ascii hex count value 
+HexOut2			equ 	h'35'		; 8 bit data representing ascii hex count value 
 ;
 ;*******************************************************************
 ;******************************************************************* 
@@ -103,6 +106,9 @@ temp2			equ		h'33'		; temp 2 variable to hold output subtracted value
 	org     h'05'           ; start of program space
 ;
 ;******************************************************************* 
+#DEFINE 	SERIALOUT		PORTC, 2; RC2 is serial output bit
+#DEFINE 	CLK				PORTC, 1; RC1 is clock
+#DEFINE 	CE				PORTC, 0; RC0 is chip enable
 ;******************************************************************* 
 ; System functions
 ;******************************************************************* 
@@ -157,7 +163,10 @@ Init
 	bcf		PORTB, 2	;start
 
 	;ensure enable bit is high, i.e. disabled		   
-	bsf		PORTC, 0
+	bsf		CE
+	
+	;ensure data in is low
+	bcf 	SERIALOUT
 
 	movlw	b'0'
 	movwf	Restart
@@ -190,12 +199,12 @@ int_routine
 ; this must be accounted for
 ;
 ;******************************************************************* 	
-;Data1 Set
+;HexOut1 Set
 ;******************************************************************* 
 ; if HexUnits < 10; 			we have integer
-;	Data1 = HexUnits + 48;  	Ascii Integer start point plus units
+;	HexOut1 = HexUnits + 48;  	Ascii Integer start point plus units
 ; else
-;	Data1 = HexUnits + (65-10); 		Ascii Num Start Point plus (units-10)
+;	HexOut1 = HexUnits + (65-10); 		Ascii Num Start Point plus (units-10)
 
 	
 	movlw	d'10'
@@ -210,7 +219,7 @@ int_routine
 	movwf	temp
 	movf	HexUnits, w
 	addwf	temp,w		;store result in w reg+
-	movwf	Data1
+	movwf	HexOut1
 	goto	setData2	
 
 ifelse  
@@ -221,16 +230,16 @@ ifelse
 	movwf	temp
 	movf	temp2, w
 	addwf	temp,w		;store result in w reg+
-	movwf	Data1
+	movwf	HexOut1
 
 ;******************************************************************* 	
-;Data2 Set
+;HexOut2 Set
 ;******************************************************************* 
 ;
 ; if HexSixteens< 10; 			we have integer
-;	Data2 = HexSixteens+ 48;  	Ascii Integer start point plus units
+;	HexOut2 = HexSixteens+ 48;  	Ascii Integer start point plus units
 ; else							we have letter A-F
-;	Data2 = HexSixteens + 65-10; 		Ascii Num Start Point plus units
+;	HEXoUT2 = HexSixteens + 65-10; 		Ascii Num Start Point plus units
 
 setData2
 	movlw	d'10'
@@ -245,7 +254,7 @@ setData2
 	movwf	temp
 	movf	HexSixteens, w
 	addwf	temp,w		;store result in w reg+
-	movwf	Data2
+	movwf	HexOut2
 	goto	display	
 
 ifelse2 
@@ -256,75 +265,18 @@ ifelse2
 	movwf	temp
 	movf	temp2, w
 	addwf	temp,w		;store result in w reg+
-	movwf	Data2
+	movwf	HexOut2
 
-;******************************************************************* 	
-;DISPLAY STOP COUNT ON HEX
-;******************************************************************* 
-; enable bit low to enable sendign data
-; Data1 = 8 bit value representing first hex ciunt ascii value
-; Data2 = 8 bit value representing second hex count ascii value
-; for (n = 0; n=7; n++) {
-;	clk = 1
-;	may need wait!!
-;	clk = 0
-;	shift data1 right
-; 	}
-;
-; repeat for data 2
-
-display
-	bcf		PORTC, 0; 				; Enable = 0; 
-	
-	clrf	counter; 
-
-serialoutput
-	movlw	d'7'	
-	subwf	counter,f	 
-	btfsc	STATUS,Z
-	goto 	forexit
-
-;pulse clock to send one bit serially
-
-	bsf		PORTC, 1
-;	may need wait
-	bcf		PORTC, 1
-
-;shift right 8 bit number so next clock high sends next bit
-	rrf		Data2, f				; update data1
-
-	incf	counter
-	goto	serialoutput
-
-forexit
-
-	clrf	counter
-
-serialoutput2
-	movlw	d'7'	
-	subwf	counter,f	 
-	btfsc	STATUS,Z
-	goto 	forexit2
-
-;pulse clock to send one bit serially
-
-	bsf		PORTC, 1
-;	may need wait
-	bcf		PORTC, 1
-
-;shift right 8 bit number so next clock high sends next bit
-	rrf		Data1, f 		; update data1
-
-	incf	counter
-	goto	serialoutput2
-
-forexit2
 
 ;	ensure return to start after interrupt
 
 	movlw	b'1'							; restart binary variable used to distinguish if counter ended due to alarm or max, or due to completetion of count
 	movwf	Restart							; restart = 1 - triggered by alarm or max count
 											; Restart = 0 - count completed as usual
+
+display
+
+;ADD OUTPUT
 
 	movf	pclath_temp,w	  				; retrieve copy of PCLATH register
 	movwf	PCLATH		  					; restore pre-isr PCLATH register contents
@@ -370,7 +322,6 @@ MaxNotReached
 ;		end
 ;
 
-
 	movlw	Alarm
 	movwf	temp
 	movf 	Count, w	
@@ -403,23 +354,67 @@ BeginCount
 ;	units = 0;
 ; 	Base = Base + 1; 
 ;else
-;	units = units + 1; 
+;	exit; 
 
 	incf	Units, f		;
 	
 	movf	Units, w
 	sublw	Base			;
 	btfss	STATUS, Z		; 
-	goto 	HexCount 			; 
+	goto 	SEVENSEG			; 
 	incf	Tens, f			; 
-	movlw	d'0'
-	movwf	Units	
-	goto	HexCount
+	clrf	Units		;
 
 ; Hex count to aid stop output
-; same functionality as above but units resets when 15
+; same functionality as above but units resets when 16
 
-HexCount
+SEVENSEG
+
+; 	SHUT DOWN Set to normal op
+	movlw	h'0C'
+	movwf	Data1
+	movlw	h'01'
+	movwf	Data2
+	call	OutputCount
+
+; set display test normal op
+	movlw	h'0F'
+	movwf	Data1
+	movlw	h'00'
+	movwf	Data2
+	call	OutputCount
+		
+;decode mode on 
+	movlw	h'09'
+	movwf	Data1
+	movlw	h'0F'
+	movwf	Data2
+	call	OutputCount
+
+;scan data
+	movlw	h'0B'
+	movwf	Data1
+	movlw	h'01'
+	movwf	Data2
+	call	OutputCount
+
+;output data
+	movlw	h'01'
+	movwf	Data1
+	movf	Units, w
+	movwf	Data2
+	call	OutputCount
+
+
+	movlw	h'02'
+	movwf	Data1
+	movf	Tens, w
+	movwf	Data2
+	call	OutputCount
+
+
+
+; INCREMENT HEX COUNT FOR OUTPUT
 
 	incf	HexUnits, f		;
 	
@@ -437,7 +432,121 @@ exitCount
 	incf	Count
 	return 	
 ;			
+;******************************************************************* 	
+;Output Count
 ;******************************************************************* 
+; enable bit low to enable sendign data
+
+; TYPICAL C code for generic 16 bits of serial data
+; Data1 = 0000 (4 bit value representing address)
+; Data2 = 8 bit data value (could represent count if address is for a display) 
+; for (n = 0; n=7; n++) {
+;	SerialOut = DATA1(0); 
+;	clk = 1
+;	may need wait!!
+;	clk = 0
+;	shift data1 right
+; 	}
+;
+; repeat for data 2
+;
+;SOME DATA 
+;******************************************************************* 	
+;Set Decode Mode Reg DATA 
+;******************************************************************* 
+
+; Data1 = 00001001 (ADDRESS)
+; Data2 = 11111111 (DATA)
+OutputCount
+
+	bcf		CE; 				; Enable = 0; 
+	
+	clrf	counter; 
+
+serialoutput
+	movlw	d'8'	
+	subwf	counter, w	 
+	btfsc	STATUS,Z
+	goto 	forexit
+
+; check next readout bit value and set PORTC to output correct value
+; if DATA bit0 = 0
+; 		serialOut = 0; 
+;else
+;		serialOut = 1; 
+
+	btfss	Data1, 7
+	goto	BITCLEAR
+	goto	BITSET
+
+BITCLEAR
+	bcf 	SERIALOUT 
+	goto 	jump
+
+BITSET
+	bsf		SERIALOUT
+
+jump	
+;shift right 8 bit number so next clock high sends next bit
+	rlf		Data1, f				; shift unit reg right 
+
+;pulse clock to send PORTC bit 2 serially
+	bsf		CLK
+	nop
+	nop
+	nop
+	nop
+	bcf		CLK
+
+	incf	counter
+	goto	serialoutput
+
+forexit
+
+	clrf	counter
+
+serialoutput2
+	movlw	d'8'	
+	subwf	counter,w	 
+	btfsc	STATUS,Z
+	goto 	forexit2
+
+; check next readout bit value and set PORTC to output correct value
+; if DATA bit0 = 0
+; 		serialOut = 0; 
+;else
+;		serialOut = 1; 
+
+	btfss	Data2, 7
+	goto	BITCLEAR2
+	goto	BITSET2
+
+BITCLEAR2
+	bcf 	SERIALOUT 
+	goto 	jump2
+
+BITSET2
+	bsf		SERIALOUT
+
+jump2	
+;shift right 8 bit number so next clock high sends next bit
+	rlf		Data2, f				; shift unit reg right 
+
+;pulse clock to send PORTC bit 2 serially
+	bsf		CLK
+	bcf		CLK
+
+	incf	counter
+	goto	serialoutput2
+
+forexit2
+
+	bsf		CE; 				; Enable = 0; 
+
+	return
+;
+;*******************************************************************   
+;
 ResetCount
 ; set overall count, units and tens to 0
 	clrf	Count
@@ -446,8 +555,22 @@ ResetCount
 	clrf	HexUnits
 	clrf	HexSixteens
 
+	movlw	h'01'
+	movwf	Data1
+	movlw	d'0'
+	movwf	Data2
+	call	OutputCount
+
+	movlw	h'02'
+	movwf	Data1
+	movlw 	d'0'
+	movwf	Data2
+	call	OutputCount
+
 	return
+;
 ;*******************************************************************   
+;
 delay	
 	movlw	d'10'
 	movwf	delcnt1
@@ -466,6 +589,7 @@ delay2
 	goto	delay	
 	
 	return
+;
 ;*******************************************************************  
 ;
 ; MAIN program
@@ -504,14 +628,12 @@ STARTCHECK
 
 	bsf       INTCON,GIE    ; | enable global interrupts
 
-
 countloop			
  	call 	Counter
 	movf	Restart, w			; Restart to w reg 
 	btfss	STATUS, Z			; if z bit is 0 then skip
 	goto	start
 	goto 	countloop
-	
 ;
 ;******************************************************************* 
 ;
